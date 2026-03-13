@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "mcpServers": {
+    "claude-memory-recorder": {
+      "command": "node",
+      "args": ["./packages/recorder/dist/index.js"],
+      "env": {
+        "DB_PATH": "~/.claude-memory/memory.db",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    },
+    "claude-memory-architect": {
+      "command": "node",
+      "args": ["./packages/architect/dist/index.js"],
+      "env": {
+        "DB_PATH": "~/.claude-memory/memory.db",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+        "SKILLS_OUTPUT_DIR": "./.claude/skills",
+        "MCP_OUTPUT_DIR": "./.claude/mcp"
+      }
+    }
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./packages/recorder/dist/cli.js save-session"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./packages/architect/dist/cli.js startup-check"
+          }
+        ]
+      }
+    ]
+  }
+}

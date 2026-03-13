@@ -1,0 +1,23 @@
+{
+  "name": "claude-memory-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Claude Code session memory and knowledge management system",
+  "workspaces": [
+    "packages/shared",
+    "packages/recorder",
+    "packages/architect"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --build"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "license": "MIT"
+}
