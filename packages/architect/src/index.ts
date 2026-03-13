@@ -26,6 +26,52 @@ import {
 import { detectCandidates, formatProposals } from './detector.js'
 import { generateSkill, forceRegenerateSkill, generateMcp, proposeClaudeMd } from './generator.js'
 
+/** Analysis prompt — same as analyzer.ts for consistency */
+const ANALYSIS_PROMPT = `You are a knowledge extraction system. Analyze the following Claude Code session log and extract structured knowledge.
+
+Rules:
+- Extract ONLY factual, reusable knowledge from the session
+- Do NOT hallucinate or infer information not present in the log
+- Each knowledge item must be self-contained and actionable
+- Titles must be under 20 characters
+- Tags should be lowercase, single-word
+- Project-specific information (IP addresses, internal hostnames, customer names) must be category="rule"
+- If no meaningful knowledge can be extracted, return empty arrays
+
+Categories:
+- skills: Reusable procedures, setup steps, workflows
+- mcp: Tool integrations, API patterns, automation opportunities
+- debug: Debugging techniques, error resolution patterns
+- workflow: Development workflow optimizations
+- rule: Project-specific rules, constraints, configurations
+
+Pattern categories:
+- mcp_candidate: Repeated tool/API usage that could be automated
+- skills_candidate: Repeated manual procedures that could be documented
+
+Respond with valid JSON only, no markdown:
+{
+  "summary": "One-sentence summary of the session",
+  "knowledge": [
+    {
+      "category": "skills|mcp|debug|workflow|rule",
+      "title": "Short title (<20 chars)",
+      "content": "Detailed, actionable content",
+      "tags": ["tag1", "tag2"]
+    }
+  ],
+  "patterns": [
+    {
+      "description": "Description of the repeated pattern",
+      "occurrences": 1,
+      "category": "mcp_candidate|skills_candidate"
+    }
+  ]
+}
+
+Session log:
+`
+
 const server = new McpServer({
   name: 'claude-memory-architect',
   version: '1.0.0',
@@ -290,6 +336,133 @@ server.tool(
         content: [{ type: 'text' as const, text: JSON.stringify(cost, null, 2) }],
       }
     } catch (error) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+      }
+    }
+  }
+)
+
+// === Manual analysis tools (no API key required) ===
+
+server.tool(
+  'recommend',
+  'Analyze pending sessions using the current Claude Code session (no API key required). Returns raw_log and analysis prompt for Claude to process, then call save_analysis_result with the result.',
+  { limit: z.number().optional().default(3).describe('Max pending sessions to return') },
+  async ({ limit }) => {
+    try {
+      const project = resolveProjectName()
+
+      // Reset failed → pending
+      resetFailedToPending(project)
+
+      const pending = getPendingSessions(project, limit)
+
+      if (pending.length === 0) {
+        // No pending sessions — show candidates instead
+        const { detectCandidates: detect, formatProposals: format } = await import('./detector.js')
+        const threshold = parseInt(process.env['CANDIDATE_THRESHOLD'] ?? '3', 10)
+        const candidates = detect(threshold, project)
+
+        if (candidates.length > 0) {
+          return {
+            content: [{ type: 'text' as const, text: `未分析セッションはありません。\n\n${format(candidates)}` }],
+          }
+        }
+        return {
+          content: [{ type: 'text' as const, text: '未分析セッションはありません。蓄積されたナレッジの候補もまだありません。' }],
+        }
+      }
+
+      // Filter and prepare sessions for analysis
+      const { shouldSkipAnalysis } = await import('@claude-memory/shared')
+      const sessionsToAnalyze: Array<{ id: string; rawLog: string }> = []
+
+      for (const session of pending) {
+        if (!session.raw_log || shouldSkipAnalysis(session.raw_log)) {
+          markAnalysisSkipped(session.id)
+          continue
+        }
+        if (!acquireAnalysisLock(session.id)) {
+          continue
+        }
+        sessionsToAnalyze.push({ id: session.id, rawLog: session.raw_log })
+      }
+
+      if (sessionsToAnalyze.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: '分析対象のセッションがありません（短すぎるログはスキップ済み）。' }],
+        }
+      }
+
+      // Return analysis instructions for Claude Code to process
+      const instructions = sessionsToAnalyze.map((s, i) => {
+        return `--- Session ${i + 1}/${sessionsToAnalyze.length} (ID: ${s.id}) ---
+
+以下のセッションログを分析し、結果を save_analysis_result ツールで保存してください。
+
+${ANALYSIS_PROMPT}${s.rawLog}`
+      }).join('\n\n===\n\n')
+
+      const header = `${sessionsToAnalyze.length}件の未分析セッションがあります。各セッションを分析し、結果を save_analysis_result ツールで保存してください。
+
+セッションID一覧: ${sessionsToAnalyze.map(s => s.id).join(', ')}
+
+`
+
+      return {
+        content: [{ type: 'text' as const, text: header + instructions }],
+      }
+    } catch (error) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+      }
+    }
+  }
+)
+
+server.tool(
+  'save_analysis_result',
+  'Save analysis result from manual /recommend flow. Called by Claude after analyzing a session log.',
+  {
+    session_id: z.string().describe('Session ID to save analysis for'),
+    summary: z.string().describe('One-sentence summary of the session'),
+    knowledge: z.array(z.object({
+      category: z.enum(['skills', 'mcp', 'debug', 'workflow', 'rule']),
+      title: z.string(),
+      content: z.string(),
+      tags: z.array(z.string()),
+    })).describe('Extracted knowledge items'),
+    patterns: z.array(z.object({
+      description: z.string(),
+      occurrences: z.number(),
+      category: z.enum(['mcp_candidate', 'skills_candidate']),
+    })).describe('Detected patterns'),
+  },
+  async ({ session_id, summary, knowledge, patterns }) => {
+    try {
+      const project = resolveProjectName()
+      const result = { summary, knowledge, patterns }
+
+      saveAnalysis(session_id, result, project)
+      cleanupAfterAnalysis(session_id)
+
+      // Detect candidates after saving
+      const threshold = parseInt(process.env['CANDIDATE_THRESHOLD'] ?? '3', 10)
+      const candidates = detectCandidates(threshold, project)
+      const proposalText = candidates.length > 0
+        ? `\n\n${formatProposals(candidates)}`
+        : ''
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `セッション ${session_id} の分析結果を保存しました。\nナレッジ: ${knowledge.length}件 / パターン: ${patterns.length}件${proposalText}`,
+        }],
+      }
+    } catch (error) {
+      // If save fails, mark as failed for retry
+      try { markAnalysisFailed(session_id) } catch { /* ignore */ }
       return {
         content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
       }
