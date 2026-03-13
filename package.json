@@ -12,7 +12,9 @@
     "build": "npm run build --workspaces",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --build"
+    "typecheck": "tsc --build",
+    "setup": "node scripts/setup.mjs",
+    "uninstall": "node scripts/setup.mjs --uninstall"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
