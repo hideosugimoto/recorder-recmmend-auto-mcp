@@ -4,6 +4,7 @@ dist/
 *.db-wal
 *.db-shm
 .DS_Store
-*.lock
+# Architect lock files (prevent multiple startup checks)
+/tmp/claude-memory-locks/
 *.tsbuildinfo
 /tmp/
