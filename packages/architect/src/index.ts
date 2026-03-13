@@ -10,6 +10,7 @@ import {
   resolveProjectName,
   isOnline,
   getMonthlyCost,
+  ANALYSIS_PROMPT,
 } from '@claude-memory/shared'
 import {
   getPendingSessions,
@@ -25,52 +26,6 @@ import {
 } from './db.js'
 import { detectCandidates, formatProposals } from './detector.js'
 import { generateSkill, forceRegenerateSkill, generateMcp, proposeClaudeMd } from './generator.js'
-
-/** Analysis prompt — same as analyzer.ts for consistency */
-const ANALYSIS_PROMPT = `You are a knowledge extraction system. Analyze the following Claude Code session log and extract structured knowledge.
-
-Rules:
-- Extract ONLY factual, reusable knowledge from the session
-- Do NOT hallucinate or infer information not present in the log
-- Each knowledge item must be self-contained and actionable
-- Titles must be under 20 characters
-- Tags should be lowercase, single-word
-- Project-specific information (IP addresses, internal hostnames, customer names) must be category="rule"
-- If no meaningful knowledge can be extracted, return empty arrays
-
-Categories:
-- skills: Reusable procedures, setup steps, workflows
-- mcp: Tool integrations, API patterns, automation opportunities
-- debug: Debugging techniques, error resolution patterns
-- workflow: Development workflow optimizations
-- rule: Project-specific rules, constraints, configurations
-
-Pattern categories:
-- mcp_candidate: Repeated tool/API usage that could be automated
-- skills_candidate: Repeated manual procedures that could be documented
-
-Respond with valid JSON only, no markdown:
-{
-  "summary": "One-sentence summary of the session",
-  "knowledge": [
-    {
-      "category": "skills|mcp|debug|workflow|rule",
-      "title": "Short title (<20 chars)",
-      "content": "Detailed, actionable content",
-      "tags": ["tag1", "tag2"]
-    }
-  ],
-  "patterns": [
-    {
-      "description": "Description of the repeated pattern",
-      "occurrences": 1,
-      "category": "mcp_candidate|skills_candidate"
-    }
-  ]
-}
-
-Session log:
-`
 
 const server = new McpServer({
   name: 'claude-memory-architect',
@@ -432,6 +387,7 @@ server.tool(
       title: z.string(),
       content: z.string(),
       tags: z.array(z.string()),
+      trigger_phrases: z.array(z.string()).optional().describe('User phrases that triggered this knowledge'),
     })).describe('Extracted knowledge items'),
     patterns: z.array(z.object({
       description: z.string(),

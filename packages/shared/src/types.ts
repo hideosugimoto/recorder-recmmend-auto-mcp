@@ -11,6 +11,8 @@ export interface KnowledgeItem {
   title: string
   content: string
   tags: string[]
+  /** User phrases that triggered this knowledge (for SKILL.md description quality) */
+  trigger_phrases?: string[]
 }
 
 /** A detected pattern (repeated workflow, tool usage, etc.) */

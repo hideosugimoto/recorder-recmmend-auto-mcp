@@ -62,7 +62,7 @@ export function calculateCost(inputTokens: number, outputTokens: number): number
   return inputCost + outputCost
 }
 
-const ANALYSIS_PROMPT = `You are a knowledge extraction system. Analyze the following Claude Code session log and extract structured knowledge.
+export const ANALYSIS_PROMPT = `You are a knowledge extraction system. Analyze the following Claude Code session log and extract structured knowledge.
 
 Rules:
 - Extract ONLY factual, reusable knowledge from the session
@@ -72,6 +72,7 @@ Rules:
 - Tags should be lowercase, single-word
 - Project-specific information (IP addresses, internal hostnames, customer names) must be category="rule"
 - If no meaningful knowledge can be extracted, return empty arrays
+- For each knowledge item, extract trigger_phrases: the exact user phrases or requests that led to this knowledge being used in the session. These help identify when users need this knowledge.
 
 Categories:
 - skills: Reusable procedures, setup steps, workflows
@@ -92,7 +93,8 @@ Respond with valid JSON only, no markdown:
       "category": "skills|mcp|debug|workflow|rule",
       "title": "Short title (<20 chars)",
       "content": "Detailed, actionable content",
-      "tags": ["tag1", "tag2"]
+      "tags": ["tag1", "tag2"],
+      "trigger_phrases": ["phrase the user said to trigger this knowledge", "alternative phrasing"]
     }
   ],
   "patterns": [

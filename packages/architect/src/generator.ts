@@ -37,7 +37,16 @@ export function slugify(title: string): string {
   return slug ? `${slug}-${hash}` : hash
 }
 
-const SKILL_PROMPT = `You are generating a SKILL.md file for Claude Code. Follow the official Skills specification exactly.
+/** Default allowed-tools per knowledge category for security */
+export const ALLOWED_TOOLS_BY_CATEGORY: Record<string, string> = {
+  skills: '',
+  mcp: 'Bash(node:*) WebFetch',
+  debug: 'Bash(*)',
+  workflow: '',
+  rule: '',
+}
+
+export const SKILL_PROMPT = `You are generating a SKILL.md file for Claude Code. Follow the official Skills specification exactly.
 
 CRITICAL REQUIREMENTS:
 1. Start with YAML frontmatter delimited by --- lines
@@ -45,16 +54,19 @@ CRITICAL REQUIREMENTS:
 3. The "description" field MUST include BOTH:
    - WHAT: What this skill does (1 sentence)
    - WHEN: Specific trigger phrases users would say (e.g., "Use when user says X, Y, or Z")
+   - NOT: Add "Do NOT use for [unrelated use cases]" to prevent over-triggering on unrelated queries
 4. Description must be under 1024 characters
 5. NEVER use XML angle brackets (< or >) in frontmatter — this is a security restriction
 6. Keep the SKILL.md body under 5,000 words — move detailed references to a separate section marked "See references/ for details"
+7. The "allowed-tools" field restricts which tools the skill can use. Use the value: {allowed_tools}
+   - If empty, omit the allowed-tools field entirely (built-in tools only)
 
 Generate a SKILL.md with this structure:
 
 ---
 name: {slug}
-description: [WHAT it does]. Use when user says "[trigger phrase 1]", "[trigger phrase 2]", or "[trigger phrase 3]".
-metadata:
+description: [WHAT it does]. Use when user says "[trigger phrase 1]", "[trigger phrase 2]", or "[trigger phrase 3]". Do NOT use for [unrelated use cases that might false-match].
+{allowed_tools_frontmatter}metadata:
   author: claude-memory-kit
   version: "1.0"
   category: {category}
@@ -89,6 +101,15 @@ Solution: [How to fix]
 
 ---
 
+After the closing --- of the SKILL.md, append a hidden test queries block in this exact format:
+
+<!-- TEST_QUERIES
+{
+  "shouldTrigger": ["3-5 example user queries that SHOULD activate this skill"],
+  "shouldNotTrigger": ["3-5 example user queries that should NOT activate this skill"]
+}
+-->
+
 Write in the same language as the input content.
 
 Knowledge to convert:
@@ -97,7 +118,7 @@ Category: {category}
 Content: {content}
 Tags: {tags}
 
-Generate ONLY the SKILL.md content (frontmatter + body), no wrapping or explanation.`
+Generate the SKILL.md content (frontmatter + body) followed by the TEST_QUERIES block.`
 
 const MCP_PROMPT = `You are generating a minimal MCP (Model Context Protocol) server in TypeScript.
 The server should automate the following knowledge into a reusable tool.
@@ -118,6 +139,36 @@ Tags: {tags}
 Generate ONLY the TypeScript code, no wrapping or explanation.`
 
 /**
+ * Parse test queries block from generated SKILL.md content.
+ * Extracts shouldTrigger/shouldNotTrigger arrays and returns clean content.
+ */
+export function parseTestQueries(content: string): {
+  shouldTrigger: string[]
+  shouldNotTrigger: string[]
+  cleanContent: string
+} {
+  const testQueriesPattern = /\s*<!-- TEST_QUERIES\n([\s\S]*?)\n-->/
+  const match = content.match(testQueriesPattern)
+
+  if (!match) {
+    return { shouldTrigger: [], shouldNotTrigger: [], cleanContent: content }
+  }
+
+  const cleanContent = content.replace(testQueriesPattern, '').trimEnd()
+
+  try {
+    const parsed = JSON.parse(match[1])
+    return {
+      shouldTrigger: Array.isArray(parsed.shouldTrigger) ? parsed.shouldTrigger : [],
+      shouldNotTrigger: Array.isArray(parsed.shouldNotTrigger) ? parsed.shouldNotTrigger : [],
+      cleanContent,
+    }
+  } catch {
+    return { shouldTrigger: [], shouldNotTrigger: [], cleanContent }
+  }
+}
+
+/**
  * Build the SKILL.md generation prompt with all placeholders filled.
  */
 function buildSkillPrompt(knowledge: KnowledgeRow): string {
@@ -127,13 +178,20 @@ function buildSkillPrompt(knowledge: KnowledgeRow): string {
     ? `[${tags.map(t => t.replace(/[<>]/g, '')).join(', ')}]`
     : '[]'
 
+  const allowedTools = ALLOWED_TOOLS_BY_CATEGORY[knowledge.category] ?? ''
+  const allowedToolsFrontmatter = allowedTools
+    ? `allowed-tools: "${allowedTools}"\n`
+    : ''
+
   return SKILL_PROMPT
     .replace(/{slug}/g, slug)
     .replace('{title}', knowledge.title)
-    .replace('{category}', knowledge.category)
+    .replace(/{category}/g, knowledge.category)
     .replace('{content}', knowledge.content)
     .replace('{tags}', knowledge.tags)
     .replace('{tags_yaml}', tagsYaml)
+    .replace('{allowed_tools}', allowedTools || '(none — built-in tools only)')
+    .replace('{allowed_tools_frontmatter}', allowedToolsFrontmatter)
 }
 
 /**
@@ -170,7 +228,7 @@ export async function generateSkill(
   knowledgeId: number,
   outputPath?: string,
   apiKey?: string
-): Promise<{ filePath: string; content: string }> {
+): Promise<{ filePath: string; content: string; testQueries: { shouldTrigger: string[]; shouldNotTrigger: string[] } }> {
   const knowledge = getKnowledgeById(knowledgeId)
   if (!knowledge) {
     throw new Error(`Knowledge ID ${knowledgeId} not found`)
@@ -203,7 +261,8 @@ export async function generateSkill(
     throw new Error('No text response from API')
   }
 
-  const sanitizedContent = sanitizeFrontmatter(textBlock.text)
+  const { shouldTrigger, shouldNotTrigger, cleanContent } = parseTestQueries(textBlock.text)
+  const sanitizedContent = sanitizeFrontmatter(cleanContent)
 
   const slug = slugify(knowledge.title)
   const skillsDir = outputPath ?? process.env['SKILLS_OUTPUT_DIR'] ?? '.claude/skills'
@@ -218,7 +277,7 @@ export async function generateSkill(
   // Mark as promoted
   promoteKnowledge(knowledgeId)
 
-  return { filePath, content: sanitizedContent }
+  return { filePath, content: sanitizedContent, testQueries: { shouldTrigger, shouldNotTrigger } }
 }
 
 /**
@@ -228,7 +287,7 @@ export async function forceRegenerateSkill(
   knowledgeId: number,
   outputPath?: string,
   apiKey?: string
-): Promise<{ filePath: string; content: string }> {
+): Promise<{ filePath: string; content: string; testQueries: { shouldTrigger: string[]; shouldNotTrigger: string[] } }> {
   const knowledge = getKnowledgeById(knowledgeId)
   if (!knowledge) {
     throw new Error(`Knowledge ID ${knowledgeId} not found`)
@@ -256,7 +315,8 @@ export async function forceRegenerateSkill(
     throw new Error('No text response from API')
   }
 
-  const sanitizedContent = sanitizeFrontmatter(textBlock.text)
+  const { shouldTrigger, shouldNotTrigger, cleanContent } = parseTestQueries(textBlock.text)
+  const sanitizedContent = sanitizeFrontmatter(cleanContent)
 
   const slug = slugify(knowledge.title)
   const skillsDir = outputPath ?? process.env['SKILLS_OUTPUT_DIR'] ?? '.claude/skills'
@@ -270,7 +330,7 @@ export async function forceRegenerateSkill(
   // Ensure promoted
   promoteKnowledge(knowledgeId)
 
-  return { filePath, content: sanitizedContent }
+  return { filePath, content: sanitizedContent, testQueries: { shouldTrigger, shouldNotTrigger } }
 }
 
 /**

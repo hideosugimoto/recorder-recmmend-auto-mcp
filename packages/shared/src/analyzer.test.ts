@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sanitize, shouldSkipAnalysis, calculateCost } from './analyzer.js'
+import { sanitize, shouldSkipAnalysis, calculateCost, ANALYSIS_PROMPT } from './analyzer.js'
 
 describe('sanitize', () => {
   describe('API keys', () => {
@@ -195,5 +195,24 @@ describe('calculateCost', () => {
 
   it('returns 0 for zero tokens', () => {
     expect(calculateCost(0, 0)).toBe(0)
+  })
+})
+
+describe('ANALYSIS_PROMPT - trigger_phrases', () => {
+  it('includes trigger_phrases field in the JSON schema', () => {
+    // Import the prompt constant to verify it contains trigger_phrases
+    // We test the exported constant directly
+    expect(ANALYSIS_PROMPT).toContain('trigger_phrases')
+  })
+
+  it('includes trigger_phrases as an array in the knowledge schema example', () => {
+    expect(ANALYSIS_PROMPT).toContain('"trigger_phrases"')
+    // The prompt should show it as an array of strings
+    expect(ANALYSIS_PROMPT).toMatch(/trigger_phrases.*\[/)
+  })
+
+  it('includes instruction for extracting trigger phrases', () => {
+    // The prompt should instruct the AI to extract how users requested the knowledge
+    expect(ANALYSIS_PROMPT).toMatch(/trigger.*phrase/i)
   })
 })
