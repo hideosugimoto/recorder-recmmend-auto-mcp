@@ -37,7 +37,7 @@ packages/
 
 - Node.js 20 LTS 以上
 - Claude Code がインストール済み
-- Anthropic API キー
+- Anthropic API キー（自動分析に必要。手動分析フローなら不要）
 
 ### インストール
 
@@ -139,19 +139,41 @@ npm run build
 | `force_regenerate_skill` | promoted ナレッジの再生成 |
 | `list_stale_knowledge` | 陳腐化ナレッジの一覧 |
 | `clear_pending_sessions` | 未分析ログの破棄 |
+| `recommend` | 手動分析（API キー不要。現セッションの Claude が分析） |
+| `save_analysis_result` | 手動分析結果の保存（recommend の後に使用） |
 | `show_cost` | API コスト表示 |
+
+### 手動分析フロー（API キー不要）
+
+`ANTHROPIC_API_KEY` を設定せずに使う場合、`recommend` → Claude が分析 → `save_analysis_result` の 3 ステップで動作する。
+
+1. **`recommend`** を呼ぶ → 未分析セッションのログと分析プロンプトが返される
+2. **Claude（現セッション）** がログを分析し、ナレッジ・パターンを抽出
+3. **`save_analysis_result`** で結果を DB に保存
+
+自動分析（`analyze`）は専用 API コールで haiku を使うため安価だが、手動分析は現セッションのモデル（opus / sonnet）で処理するため精度が高い反面、トークン消費はセッション側に計上される。
+
+### SKILL.md 生成仕様
+
+`generate_skill` / `force_regenerate_skill` が生成する SKILL.md は、Claude Code 公式 Skills ガイドに準拠している。
+
+- **YAML frontmatter**: `name`（kebab-case）、`description`（WHAT + WHEN）、`allowed-tools`（カテゴリ別デフォルト）
+- **3 層 Progressive Disclosure**: frontmatter → 本文（指示・例）→ `references/` ディレクトリ（補足資料）
+- **テストクエリ自動生成**: `shouldTrigger`（スキルが発動すべきクエリ例）と `shouldNotTrigger`（発動すべきでないクエリ例）を生成し、スキルの精度検証に使用
+- **セキュリティ**: frontmatter 内の XML 角括弧（`<>`）は自動除去。`allowed-tools` はナレッジカテゴリに応じたデフォルトを適用
 
 ## 環境変数
 
 | 変数名 | 用途 | デフォルト |
 |--------|------|----------|
-| `ANTHROPIC_API_KEY` | Anthropic API キー（必須） | - |
+| `ANTHROPIC_API_KEY` | Anthropic API キー（自動分析に必要） | - |
 | `DB_PATH` | SQLite ファイルパス | `~/.claude-memory/memory.db` |
 | `MAX_MONTHLY_COST_USD` | 月次コスト上限 | `5.0` |
 | `RETENTION_DAYS` | セッション保持日数 | `90` |
 | `PENDING_TTL_DAYS` | pending 有効期限 | `7` |
 | `SKILLS_OUTPUT_DIR` | SKILL.md 出力先 | `.claude/skills` |
 | `MCP_OUTPUT_DIR` | MCP サーバー出力先 | `.claude/mcp` |
+| `CANDIDATE_THRESHOLD` | 候補検出の最小 hit_count | `3` |
 
 全環境変数の一覧は `docs/design.md` §11 を参照。
 
@@ -167,7 +189,7 @@ npm run typecheck
 ### テスト
 
 ```bash
-npm test              # 全テスト実行
+npm test              # 全テスト実行（123件）
 npm run test:watch    # ウォッチモード
 ```
 
