@@ -68,7 +68,7 @@ Rules:
 - Extract ONLY factual, reusable knowledge from the session
 - Do NOT hallucinate or infer information not present in the log
 - Each knowledge item must be self-contained and actionable
-- Titles must be under 20 characters
+- Titles must be in English kebab-case (e.g., "docker-setup-guide", "eslint-config-fix"), under 20 characters, no spaces
 - Tags should be lowercase, single-word
 - Project-specific information (IP addresses, internal hostnames, customer names) must be category="rule"
 - If no meaningful knowledge can be extracted, return empty arrays
