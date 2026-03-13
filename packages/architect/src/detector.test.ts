@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
-import { initDb, closeDb, saveRawLog, saveAnalysis } from '@claude-memory/shared'
+import { initDb, closeDb, saveRawLog, saveAnalysis, getDb } from '@claude-memory/shared'
 import { detectCandidates, formatProposals } from './detector.js'
 
 let testDbPath: string
@@ -20,13 +20,13 @@ afterEach(() => {
 })
 
 function ensureSession() {
-  const db = (require('@claude-memory/shared') as typeof import('@claude-memory/shared')).getDb()
+  const db = getDb()
   db.prepare(`INSERT OR IGNORE INTO sessions (id, project, analysis_status) VALUES ('s1', 'test-project', 'completed')`).run()
 }
 
 function seedKnowledge(hitCount: number, category = 'skills', title = 'Docker setup') {
   ensureSession()
-  const db = (require('@claude-memory/shared') as typeof import('@claude-memory/shared')).getDb()
+  const db = getDb()
 
   db.prepare(`
     INSERT INTO knowledge (session_id, project, category, title, content, tags, hit_count, confidence_score, promoted)
@@ -50,7 +50,7 @@ describe('detectCandidates', () => {
 
   it('excludes promoted knowledge', () => {
     ensureSession()
-    const db = (require('@claude-memory/shared') as typeof import('@claude-memory/shared')).getDb()
+    const db = getDb()
     db.prepare(`
       INSERT INTO knowledge (session_id, project, category, title, content, tags, hit_count, confidence_score, promoted)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, TRUE)
@@ -62,7 +62,7 @@ describe('detectCandidates', () => {
 
   it('excludes low confidence knowledge', () => {
     ensureSession()
-    const db = (require('@claude-memory/shared') as typeof import('@claude-memory/shared')).getDb()
+    const db = getDb()
     db.prepare(`
       INSERT INTO knowledge (session_id, project, category, title, content, tags, hit_count, confidence_score, promoted)
       VALUES (?, ?, ?, ?, ?, ?, ?, 0.3, FALSE)

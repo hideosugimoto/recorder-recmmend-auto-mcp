@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import * as crypto from 'node:crypto'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
-import { type KnowledgeRow } from '@claude-memory/shared'
+import { type KnowledgeRow, getDb } from '@claude-memory/shared'
 import { auditGeneratedCode } from './auditor.js'
 import { promoteKnowledge, getKnowledgeById } from './db.js'
 
@@ -264,7 +264,6 @@ export function proposeClaudeMd(
   project: string,
   sessionIds?: string[]
 ): { additions: string[]; knowledgeIds: number[] } {
-  const { getDb } = require('@claude-memory/shared') as typeof import('@claude-memory/shared')
   const db = getDb()
 
   let query = `

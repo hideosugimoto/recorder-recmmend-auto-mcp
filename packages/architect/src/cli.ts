@@ -2,6 +2,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as crypto from 'node:crypto'
 import {
   initDb,
   closeDb,
@@ -11,6 +12,10 @@ import {
   checkDbSize,
   resolveProjectName,
   isOnline,
+  getMonthlyCost,
+  shouldSkipAnalysis,
+  analyzeWithRetry,
+  calculateCost,
 } from '@claude-memory/shared'
 import {
   getPendingSessions,
@@ -25,7 +30,6 @@ import {
   demoteKnowledge,
 } from './db.js'
 import { detectCandidates, formatProposals } from './detector.js'
-import { shouldSkipAnalysis, analyzeWithRetry, calculateCost } from '@claude-memory/shared'
 
 const LOCK_DIR = path.join(os.tmpdir(), 'claude-memory-locks')
 const MAX_PENDING_PER_RUN = 3
@@ -56,7 +60,6 @@ function syncPromotedFromDisk(): void {
 }
 
 function slugifyForCheck(title: string): string {
-  const crypto = require('node:crypto') as typeof import('node:crypto')
   const hash = crypto.createHash('sha256').update(title).digest('hex').slice(0, 6)
   const slug = title.toLowerCase().replace(/[^\w\s-]/g, '').replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
   return slug ? `${slug}-${hash}` : hash
@@ -143,7 +146,6 @@ async function runStartupCheck(signal: AbortSignal): Promise<void> {
 
     // Check monthly cost limit
     const maxCost = parseFloat(process.env['MAX_MONTHLY_COST_USD'] ?? '5.0')
-    const { getMonthlyCost } = await import('@claude-memory/shared')
     const currentCost = getMonthlyCost(project)
     if (currentCost >= maxCost) {
       process.stderr.write(`[architect] Monthly cost limit reached ($${currentCost.toFixed(2)}/$${maxCost.toFixed(2)}). Skipping analysis.\n`)
