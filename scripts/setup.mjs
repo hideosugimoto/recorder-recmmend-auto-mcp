@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from
 import { resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
@@ -191,6 +192,15 @@ function main() {
     console.log('  added:   mcpServers (recorder + architect)')
     console.log('  added:   Stop hook (save-session)')
     console.log('  added:   PreToolUse hook (startup-check)')
+
+    // Import past session history
+    console.log('\n  importing past session history...')
+    try {
+      const importScript = resolve(PROJECT_ROOT, 'scripts/import-history.mjs')
+      execFileSync('node', [importScript], { stdio: 'inherit' })
+    } catch {
+      console.log('  warning: history import failed (non-blocking)')
+    }
   }
 
   console.log(`\n  done. Restart Claude Code to apply.\n`)

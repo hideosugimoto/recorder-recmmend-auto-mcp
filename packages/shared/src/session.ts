@@ -103,7 +103,7 @@ export function resolveProjectName(): string {
 /**
  * Extract human-readable conversation from JSONL session file.
  */
-function extractConversationFromJsonl(content: string): string {
+export function extractConversationFromJsonl(content: string): string {
   const lines = content.split('\n').filter(l => l.trim())
   const messages: string[] = []
 

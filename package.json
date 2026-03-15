@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --build",
     "setup": "node scripts/setup.mjs",
-    "uninstall": "node scripts/setup.mjs --uninstall"
+    "uninstall": "node scripts/setup.mjs --uninstall",
+    "import-history": "node scripts/import-history.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
