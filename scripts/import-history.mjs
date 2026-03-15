@@ -187,9 +187,7 @@ function main() {
       imported++
     } catch (err) {
       errors++
-      if (isDryRun) {
-        console.error(`  [error] ${sessionId}: ${err.message}`)
-      }
+      console.error(`  [error] ${projectName} / ${sessionId}: ${err.message}`)
     }
   }
 
