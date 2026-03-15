@@ -2,10 +2,12 @@
 /**
  * claude-memory-kit setup script
  *
+ * MCP servers  → ~/.claude.json (mcpServers)
+ * Hooks        → ~/.claude/settings.json (Stop / PreToolUse)
+ *
  * Usage:
- *   npm run setup              # interactive (default: ~/.claude/settings.json)
- *   npm run setup -- --global  # same as default
- *   npm run setup -- --local   # .claude/settings.json in current project
+ *   npm run setup              # install (global)
+ *   npm run setup -- --local   # hooks to .claude/settings.json in current project
  *   npm run setup -- --uninstall
  */
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from 'node:fs'
@@ -25,6 +27,7 @@ const ARCHITECT_SERVER_KEY = 'claude-memory-architect'
 function mcpServersConfig() {
   return {
     [RECORDER_SERVER_KEY]: {
+      type: 'stdio',
       command: 'node',
       args: [resolve(PROJECT_ROOT, 'packages/recorder/dist/index.js')],
       env: {
@@ -32,6 +35,7 @@ function mcpServersConfig() {
       },
     },
     [ARCHITECT_SERVER_KEY]: {
+      type: 'stdio',
       command: 'node',
       args: [resolve(PROJECT_ROOT, 'packages/architect/dist/index.js')],
       env: {
@@ -51,8 +55,14 @@ function architectHookCommand() {
   return `node ${resolve(PROJECT_ROOT, 'packages/architect/dist/cli.js')} startup-check`
 }
 
-// ── Helpers ─────────────────────────────────────────────────────
+// ── Paths ───────────────────────────────────────────────────────
 
+/** MCP servers are registered in ~/.claude.json */
+function claudeJsonPath() {
+  return resolve(homedir(), '.claude.json')
+}
+
+/** Hooks are registered in ~/.claude/settings.json */
 function settingsPath(mode) {
   if (mode === 'local') {
     return resolve(process.cwd(), '.claude/settings.json')
@@ -60,13 +70,15 @@ function settingsPath(mode) {
   return resolve(homedir(), '.claude/settings.json')
 }
 
-function readSettings(path) {
+// ── Helpers ─────────────────────────────────────────────────────
+
+function readJson(path) {
   if (!existsSync(path)) {
     return {}
   }
   try {
     return JSON.parse(readFileSync(path, 'utf-8'))
-  } catch (error) {
+  } catch {
     console.error(`  error: ${path} is not valid JSON. Fix it manually or delete the file.`)
     process.exit(1)
   }
@@ -81,6 +93,11 @@ function backup(path) {
   return null
 }
 
+function writeJson(path, data) {
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+}
+
 /** Find hook entry index by command substring match */
 function findHookIndex(hookArray, commandSubstring) {
   return hookArray.findIndex((entry) =>
@@ -88,18 +105,30 @@ function findHookIndex(hookArray, commandSubstring) {
   )
 }
 
-// ── Install ─────────────────────────────────────────────────────
+// ── MCP Servers (claude.json) ───────────────────────────────────
 
-function install(settings) {
-  // 1. mcpServers — upsert
-  if (!settings.mcpServers) {
-    settings.mcpServers = {}
+function installMcpServers(claudeJson) {
+  if (!claudeJson.mcpServers) {
+    claudeJson.mcpServers = {}
   }
   const servers = mcpServersConfig()
-  settings.mcpServers[RECORDER_SERVER_KEY] = servers[RECORDER_SERVER_KEY]
-  settings.mcpServers[ARCHITECT_SERVER_KEY] = servers[ARCHITECT_SERVER_KEY]
+  claudeJson.mcpServers[RECORDER_SERVER_KEY] = servers[RECORDER_SERVER_KEY]
+  claudeJson.mcpServers[ARCHITECT_SERVER_KEY] = servers[ARCHITECT_SERVER_KEY]
+  return claudeJson
+}
 
-  // 2. Stop hook — upsert
+function uninstallMcpServers(claudeJson) {
+  if (claudeJson.mcpServers) {
+    delete claudeJson.mcpServers[RECORDER_SERVER_KEY]
+    delete claudeJson.mcpServers[ARCHITECT_SERVER_KEY]
+  }
+  return claudeJson
+}
+
+// ── Hooks (settings.json) ───────────────────────────────────────
+
+function installHooks(settings) {
+  // Stop hook — upsert
   if (!Array.isArray(settings.Stop)) {
     settings.Stop = []
   }
@@ -114,7 +143,7 @@ function install(settings) {
     settings.Stop.push(recorderEntry)
   }
 
-  // 3. PreToolUse hook — upsert (append to existing array)
+  // PreToolUse hook — upsert
   if (!Array.isArray(settings.PreToolUse)) {
     settings.PreToolUse = []
   }
@@ -132,15 +161,7 @@ function install(settings) {
   return settings
 }
 
-// ── Uninstall ───────────────────────────────────────────────────
-
-function uninstall(settings) {
-  // Remove mcpServers
-  if (settings.mcpServers) {
-    delete settings.mcpServers[RECORDER_SERVER_KEY]
-    delete settings.mcpServers[ARCHITECT_SERVER_KEY]
-  }
-
+function uninstallHooks(settings) {
   // Remove Stop hook
   if (Array.isArray(settings.Stop)) {
     const idx = findHookIndex(settings.Stop, 'recorder/dist/cli.js')
@@ -156,6 +177,27 @@ function uninstall(settings) {
   return settings
 }
 
+// ── Migrate: remove old mcpServers from settings.json ───────────
+
+function migrateOldMcpServers(settings) {
+  let migrated = false
+  if (settings.mcpServers) {
+    if (settings.mcpServers[RECORDER_SERVER_KEY]) {
+      delete settings.mcpServers[RECORDER_SERVER_KEY]
+      migrated = true
+    }
+    if (settings.mcpServers[ARCHITECT_SERVER_KEY]) {
+      delete settings.mcpServers[ARCHITECT_SERVER_KEY]
+      migrated = true
+    }
+    // Clean up empty mcpServers object
+    if (Object.keys(settings.mcpServers).length === 0) {
+      delete settings.mcpServers
+    }
+  }
+  return migrated
+}
+
 // ── Main ────────────────────────────────────────────────────────
 
 function main() {
@@ -164,32 +206,47 @@ function main() {
   const isLocal = args.includes('--local')
   const mode = isLocal ? 'local' : 'global'
 
-  const path = settingsPath(mode)
-  const label = mode === 'local' ? path : `~/.claude/settings.json`
-
   console.log(`\n  claude-memory-kit ${isUninstall ? 'uninstall' : 'setup'}`)
-  console.log(`  target: ${label}\n`)
 
-  // Read
-  const settings = readSettings(path)
+  // ── 1. MCP servers → ~/.claude.json ──
+  const cjPath = claudeJsonPath()
+  console.log(`  mcp:   ~/.claude.json`)
 
-  // Backup
-  const backupPath = backup(path)
-  if (backupPath) {
-    console.log(`  backup: ${backupPath}`)
+  const claudeJson = readJson(cjPath)
+  const cjBackup = backup(cjPath)
+  if (cjBackup) console.log(`  backup: ${cjBackup}`)
+
+  const updatedCj = isUninstall
+    ? uninstallMcpServers(claudeJson)
+    : installMcpServers(claudeJson)
+  writeJson(cjPath, updatedCj)
+
+  // ── 2. Hooks → ~/.claude/settings.json ──
+  const stPath = settingsPath(mode)
+  const stLabel = mode === 'local' ? stPath : '~/.claude/settings.json'
+  console.log(`  hooks: ${stLabel}`)
+
+  const settings = readJson(stPath)
+  const stBackup = backup(stPath)
+  if (stBackup) console.log(`  backup: ${stBackup}`)
+
+  // Migrate: remove old mcpServers from settings.json
+  const didMigrate = migrateOldMcpServers(settings)
+  if (didMigrate) {
+    console.log('  migrated: removed old mcpServers from settings.json')
   }
 
-  // Apply
-  const updated = isUninstall ? uninstall(settings) : install(settings)
+  const updatedSt = isUninstall
+    ? uninstallHooks(settings)
+    : installHooks(settings)
+  writeJson(stPath, updatedSt)
 
-  // Write
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(updated, null, 2) + '\n', 'utf-8')
-
+  // ── 3. Summary ──
   if (isUninstall) {
-    console.log('  removed: mcpServers, Stop hook, PreToolUse hook')
+    console.log('\n  removed: mcpServers (from ~/.claude.json)')
+    console.log('  removed: Stop hook, PreToolUse hook (from settings.json)')
   } else {
-    console.log('  added:   mcpServers (recorder + architect)')
+    console.log('\n  added:   mcpServers → ~/.claude.json (recorder + architect)')
     console.log('  added:   Stop hook (save-session)')
     console.log('  added:   PreToolUse hook (startup-check)')
 

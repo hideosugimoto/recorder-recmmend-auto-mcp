@@ -50,58 +50,21 @@ npm run build
 
 ### Claude Code への登録
 
-`.claude/settings.json` に以下を追加:
+ワンコマンドで登録できます:
 
-```json
-{
-  "mcpServers": {
-    "claude-memory-recorder": {
-      "command": "node",
-      "args": ["./packages/recorder/dist/index.js"],
-      "env": {
-        "DB_PATH": "~/.claude-memory/memory.db",
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
-      }
-    },
-    "claude-memory-architect": {
-      "command": "node",
-      "args": ["./packages/architect/dist/index.js"],
-      "env": {
-        "DB_PATH": "~/.claude-memory/memory.db",
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
-        "SKILLS_OUTPUT_DIR": "./.claude/skills",
-        "MCP_OUTPUT_DIR": "./.claude/mcp"
-      }
-    }
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ./packages/recorder/dist/cli.js save-session"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ./packages/architect/dist/cli.js startup-check"
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+npm run setup
 ```
 
-完全なサンプルは `examples/settings.json` を参照。
+以下が自動で行われます:
+
+- **`~/.claude.json`** に MCP サーバー（recorder + architect）を登録
+- **`~/.claude/settings.json`** に Stop / PreToolUse フックを登録
+- 過去のセッション履歴を DB にインポート
+
+既に `settings.json` に古い形式で mcpServers が登録されている場合は、自動で削除してから `~/.claude.json` に移行します。
+
+登録後は **Claude Code を再起動**してください。
 
 ## 使い方
 
