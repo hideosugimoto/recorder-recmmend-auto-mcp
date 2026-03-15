@@ -19,8 +19,17 @@ export function getDb(): Database.Database {
   return db
 }
 
+/** Expand leading ~ to homedir (Node.js does not expand tilde in env vars) */
+function expandTilde(p: string): string {
+  if (p.startsWith('~/') || p === '~') {
+    return path.join(os.homedir(), p.slice(1))
+  }
+  return p
+}
+
 export function initDb(dbPath?: string): Database.Database {
-  const resolvedPath = dbPath ?? process.env['DB_PATH'] ?? DEFAULT_DB_PATH
+  const raw = dbPath ?? process.env['DB_PATH'] ?? DEFAULT_DB_PATH
+  const resolvedPath = expandTilde(raw)
   const dir = path.dirname(resolvedPath)
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
