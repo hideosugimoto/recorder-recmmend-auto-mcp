@@ -7,7 +7,7 @@ import {
   saveAnalysis,
   cleanupAfterAnalysis,
   runRetentionCleanup,
-  resolveProjectName,
+  resolveProjectNameFromSession,
   isOnline,
   getMonthlyCost,
   ANALYSIS_PROMPT,
@@ -42,7 +42,7 @@ server.tool(
   { threshold: z.number().optional().default(3).describe('Minimum hit_count for candidate detection') },
   async ({ threshold }) => {
     try {
-      const project = resolveProjectName()
+      const project = resolveProjectNameFromSession()
 
       // Reset failed → pending
       resetFailedToPending(project)
@@ -169,7 +169,7 @@ server.tool(
   { session_ids: z.array(z.string()).optional().describe('Filter by session IDs') },
   async ({ session_ids }) => {
     try {
-      const project = resolveProjectName()
+      const project = resolveProjectNameFromSession()
       const { additions, knowledgeIds } = proposeClaudeMd(project, session_ids)
 
       if (additions.length === 0) {
@@ -306,7 +306,7 @@ server.tool(
   { limit: z.number().optional().default(3).describe('Max pending sessions to return') },
   async ({ limit }) => {
     try {
-      const project = resolveProjectName()
+      const project = resolveProjectNameFromSession()
 
       // Reset failed → pending
       resetFailedToPending(project)
@@ -397,7 +397,7 @@ server.tool(
   },
   async ({ session_id, summary, knowledge, patterns }) => {
     try {
-      const project = resolveProjectName()
+      const project = resolveProjectNameFromSession()
       const result = { summary, knowledge, patterns }
 
       saveAnalysis(session_id, result, project)

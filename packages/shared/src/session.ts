@@ -101,6 +101,74 @@ export function resolveProjectName(): string {
 }
 
 /**
+ * Extract project name from JSONL session content by reading the cwd field.
+ * JSONL entries contain {"cwd": "/Users/foo/develop/myproject", ...}
+ * Returns path.basename(cwd), e.g., "myproject".
+ * Falls back to resolveProjectName() if cwd is not found in JSONL.
+ */
+export function extractProjectNameFromJsonl(content: string): string {
+  const lines = content.split('\n').filter(l => l.trim())
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line)
+      if (entry.cwd && typeof entry.cwd === 'string') {
+        return path.basename(entry.cwd)
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  // Fallback to cwd-based resolution
+  return resolveProjectName()
+}
+
+/**
+ * Resolve project name from the current session's JSONL file.
+ * Reads the JSONL file for the given sessionId and extracts the cwd field.
+ * This is more reliable than process.cwd() because hooks and MCP servers
+ * may run with a different cwd than the actual Claude Code session.
+ */
+export function resolveProjectNameFromSession(sessionId?: string): string {
+  const sid = sessionId ?? resolveSessionId()
+  const projectPath = resolveProjectPath()
+
+  if (projectPath) {
+    const projectDir = path.join(os.homedir(), '.claude', 'projects', projectPath)
+    const sessionFile = path.join(projectDir, `${sid}.jsonl`)
+    try {
+      if (fs.existsSync(sessionFile)) {
+        const content = fs.readFileSync(sessionFile, 'utf-8')
+        return extractProjectNameFromJsonl(content)
+      }
+    } catch {
+      // Fall through
+    }
+
+    // Try to find any recent JSONL in the project dir and extract cwd
+    try {
+      const files = fs.readdirSync(projectDir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({
+          name: f,
+          mtime: fs.statSync(path.join(projectDir, f)).mtime.getTime(),
+        }))
+        .sort((a, b) => b.mtime - a.mtime)
+
+      if (files.length > 0) {
+        const content = fs.readFileSync(path.join(projectDir, files[0].name), 'utf-8')
+        return extractProjectNameFromJsonl(content)
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  return resolveProjectName()
+}
+
+/**
  * Extract human-readable conversation from JSONL session file.
  */
 export function extractConversationFromJsonl(content: string): string {

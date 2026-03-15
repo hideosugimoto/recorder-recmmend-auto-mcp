@@ -9,7 +9,9 @@ import {
   resolveSessionId,
   resolveSessionLog,
   resolveProjectName,
+  extractProjectNameFromJsonl,
   truncateToTokenLimit,
+  resolveProjectPath,
 } from '@claude-memory/shared'
 import { sanitize, shouldSkipAnalysis } from './analyzer.js'
 
@@ -68,6 +70,28 @@ function showConsentPrompt(): boolean {
 }
 
 /**
+ * Resolve project name from the JSONL session file's cwd metadata.
+ * This avoids depending on the hook process's cwd, which may differ
+ * from the actual Claude Code session's working directory.
+ */
+function resolveProjectNameFromJsonl(sessionId: string): string {
+  const projectPath = resolveProjectPath()
+  if (projectPath) {
+    const CLAUDE_DIR = path.join(os.homedir(), '.claude')
+    const sessionFile = path.join(CLAUDE_DIR, 'projects', projectPath, `${sessionId}.jsonl`)
+    try {
+      if (fs.existsSync(sessionFile)) {
+        const content = fs.readFileSync(sessionFile, 'utf-8')
+        return extractProjectNameFromJsonl(content)
+      }
+    } catch {
+      // Fall through
+    }
+  }
+  return resolveProjectName()
+}
+
+/**
  * Main CLI entry point for Stop hook.
  * Flow: resolveSessionLog → sanitize → truncate → saveRawLog → exit 0
  */
@@ -95,7 +119,6 @@ async function main(): Promise<void> {
 
   // Resolve session
   const sessionId = resolveSessionId()
-  const projectName = resolveProjectName()
 
   // Resolve session log
   const rawLog = resolveSessionLog(sessionId, summary)
@@ -104,6 +127,10 @@ async function main(): Promise<void> {
     process.exit(0)
     return
   }
+
+  // Resolve project name from JSONL metadata (cwd field), not process.cwd()
+  const projectName = resolveProjectNameFromJsonl(sessionId)
+
 
   // Skip short sessions
   if (shouldSkipAnalysis(rawLog)) {

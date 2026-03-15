@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
-import { initDb, closeDb, saveRawLog, resolveSessionId, resolveSessionLog, resolveProjectName, truncateToTokenLimit } from '@claude-memory/shared'
+import { initDb, closeDb, saveRawLog, resolveSessionId, resolveSessionLog, resolveProjectNameFromSession, truncateToTokenLimit } from '@claude-memory/shared'
 import { sanitize, shouldSkipAnalysis } from './analyzer.js'
 import { upsertKnowledge, searchKnowledge, reviewKnowledge, listSessions, showCost } from './db.js'
 
@@ -21,7 +21,7 @@ server.tool(
   { session_id: z.string().describe('The session ID to save') },
   async ({ session_id }) => {
     try {
-      const projectName = resolveProjectName()
+      const projectName = resolveProjectNameFromSession()
       const rawLog = resolveSessionLog(session_id)
 
       if (!rawLog) {
@@ -60,7 +60,7 @@ server.tool(
   },
   async ({ content, category, tags, title }) => {
     try {
-      const projectName = resolveProjectName()
+      const projectName = resolveProjectNameFromSession()
       const sessionId = resolveSessionId()
       const knowledgeTitle = title ?? content.slice(0, 20)
 
