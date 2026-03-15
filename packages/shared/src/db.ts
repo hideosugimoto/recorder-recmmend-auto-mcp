@@ -351,7 +351,8 @@ export function runRetentionCleanup(retentionDays = 90, patternRetentionDays = 1
  * Check DB file size and warn if too large.
  */
 export function checkDbSize(dbPath?: string): { sizeBytes: number; warning: boolean } {
-  const resolvedPath = dbPath ?? process.env['DB_PATH'] ?? DEFAULT_DB_PATH
+  const raw = dbPath ?? process.env['DB_PATH'] ?? DEFAULT_DB_PATH
+  const resolvedPath = expandTilde(raw)
   try {
     const stats = fs.statSync(resolvedPath)
     const WARNING_THRESHOLD = 100 * 1024 * 1024 // 100MB

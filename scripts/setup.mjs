@@ -212,9 +212,9 @@ function main() {
   const cjPath = claudeJsonPath()
   console.log(`  mcp:   ~/.claude.json`)
 
-  const claudeJson = readJson(cjPath)
   const cjBackup = backup(cjPath)
   if (cjBackup) console.log(`  backup: ${cjBackup}`)
+  const claudeJson = readJson(cjPath)
 
   const updatedCj = isUninstall
     ? uninstallMcpServers(claudeJson)
@@ -226,9 +226,9 @@ function main() {
   const stLabel = mode === 'local' ? stPath : '~/.claude/settings.json'
   console.log(`  hooks: ${stLabel}`)
 
-  const settings = readJson(stPath)
   const stBackup = backup(stPath)
   if (stBackup) console.log(`  backup: ${stBackup}`)
+  const settings = readJson(stPath)
 
   // Migrate: remove old mcpServers from settings.json
   const didMigrate = migrateOldMcpServers(settings)
