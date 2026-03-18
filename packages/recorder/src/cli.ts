@@ -9,14 +9,46 @@ import {
   resolveSessionId,
   resolveSessionLog,
   resolveProjectName,
+  extractConversationFromJsonl,
   extractProjectNameFromJsonl,
   truncateToTokenLimit,
-  resolveProjectPath,
 } from '@claude-memory/shared'
 import { sanitize, shouldSkipAnalysis } from './analyzer.js'
 
 const CONSENT_DIR = path.join(os.homedir(), '.claude-memory')
 const CONSENT_FILE = path.join(CONSENT_DIR, 'consented')
+
+/**
+ * Stop hook stdin JSON schema (provided by Claude Code).
+ */
+interface StopHookInput {
+  session_id?: string
+  transcript_path?: string
+  cwd?: string
+  hook_event_name?: string
+  stop_hook_active?: boolean
+  last_assistant_message?: string
+}
+
+/**
+ * Read and parse Stop hook JSON from stdin (synchronous, non-blocking).
+ * Claude Code pipes JSON to stdin for all hooks.
+ * Returns parsed input or empty object on failure.
+ */
+function readStdinSync(): StopHookInput {
+  try {
+    const fd = fs.openSync('/dev/stdin', 'r')
+    const buf = Buffer.alloc(1024 * 1024) // 1MB max
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, null)
+    fs.closeSync(fd)
+    if (bytesRead === 0) return {}
+    const raw = buf.subarray(0, bytesRead).toString('utf-8').trim()
+    if (!raw) return {}
+    return JSON.parse(raw) as StopHookInput
+  } catch {
+    return {}
+  }
+}
 
 /**
  * Check if user has consented to session data being sent to Claude API.
@@ -70,30 +102,13 @@ function showConsentPrompt(): boolean {
 }
 
 /**
- * Resolve project name from the JSONL session file's cwd metadata.
- * This avoids depending on the hook process's cwd, which may differ
- * from the actual Claude Code session's working directory.
- */
-function resolveProjectNameFromJsonl(sessionId: string): string {
-  const projectPath = resolveProjectPath()
-  if (projectPath) {
-    const CLAUDE_DIR = path.join(os.homedir(), '.claude')
-    const sessionFile = path.join(CLAUDE_DIR, 'projects', projectPath, `${sessionId}.jsonl`)
-    try {
-      if (fs.existsSync(sessionFile)) {
-        const content = fs.readFileSync(sessionFile, 'utf-8')
-        return extractProjectNameFromJsonl(content)
-      }
-    } catch {
-      // Fall through
-    }
-  }
-  return resolveProjectName()
-}
-
-/**
  * Main CLI entry point for Stop hook.
- * Flow: resolveSessionLog → sanitize → truncate → saveRawLog → exit 0
+ * Flow: read stdin → resolve session → sanitize → truncate → saveRawLog → exit 0
+ *
+ * Session resolution priority:
+ * 1. stdin JSON from Claude Code (session_id + transcript_path) — most reliable
+ * 2. CLAUDE_SESSION_ID env var
+ * 3. Most recent JSONL file (fallback, unreliable with concurrent sessions)
  */
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
@@ -117,20 +132,50 @@ async function main(): Promise<void> {
     }
   }
 
-  // Resolve session
-  const sessionId = resolveSessionId()
+  // Read Stop hook input from stdin (Claude Code provides session_id + transcript_path)
+  const hookInput = readStdinSync()
 
-  // Resolve session log
-  const rawLog = resolveSessionLog(sessionId, summary)
+  // Resolve session ID: stdin > env > file-based fallback
+  const sessionId = hookInput.session_id || resolveSessionId()
+
+  // Resolve session log: transcript_path from stdin > file-based fallback
+  let rawLog: string | null = null
+
+  if (hookInput.transcript_path) {
+    try {
+      if (fs.existsSync(hookInput.transcript_path)) {
+        const content = fs.readFileSync(hookInput.transcript_path, 'utf-8')
+        rawLog = extractConversationFromJsonl(content)
+      }
+    } catch {
+      // Fall through to resolveSessionLog
+    }
+  }
+
+  if (!rawLog) {
+    rawLog = resolveSessionLog(sessionId, summary)
+  }
+
   if (!rawLog) {
     process.stderr.write('[claude-memory] Session log not found. Skipping.\n')
     process.exit(0)
     return
   }
 
-  // Resolve project name from JSONL metadata (cwd field), not process.cwd()
-  const projectName = resolveProjectNameFromJsonl(sessionId)
-
+  // Resolve project name: stdin cwd > JSONL metadata > process.cwd()
+  let projectName: string
+  if (hookInput.cwd) {
+    projectName = path.basename(hookInput.cwd)
+  } else if (hookInput.transcript_path) {
+    try {
+      const content = fs.readFileSync(hookInput.transcript_path, 'utf-8')
+      projectName = extractProjectNameFromJsonl(content)
+    } catch {
+      projectName = resolveProjectName()
+    }
+  } else {
+    projectName = resolveProjectName()
+  }
 
   // Skip short sessions
   if (shouldSkipAnalysis(rawLog)) {
@@ -154,6 +199,7 @@ async function main(): Promise<void> {
     process.stderr.write(`  Session ID: ${sessionId}\n`)
     process.stderr.write(`  Project: ${projectName}\n`)
     process.stderr.write(`  Log length: ${truncated.length} chars\n`)
+    process.stderr.write(`  Source: ${hookInput.session_id ? 'stdin' : 'fallback'}\n`)
     process.exit(0)
     return
   }
@@ -163,7 +209,7 @@ async function main(): Promise<void> {
   saveRawLog(sessionId, truncated, projectName)
   closeDb()
 
-  process.stderr.write(`[claude-memory] Session saved (${truncated.length} chars, pending analysis).\n`)
+  process.stderr.write(`[claude-memory] Session saved: ${sessionId.slice(0, 8)} (${truncated.length} chars, ${projectName}).\n`)
 }
 
 // Always exit 0 — CRITICAL: hooks must never block Claude Code
