@@ -10,11 +10,12 @@
  *   npm run setup -- --local   # hooks to .claude/settings.json in current project
  *   npm run setup -- --uninstall
  */
-import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs'
+import { resolve, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { createInterface } from 'node:readline'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
@@ -198,15 +199,86 @@ function migrateOldMcpServers(settings) {
   return migrated
 }
 
+// ── Consent ─────────────────────────────────────────────────────
+
+const CONSENT_DIR = join(homedir(), '.claude-memory')
+const CONSENT_FILE = join(CONSENT_DIR, 'consented')
+
+function hasConsent() {
+  if (process.env['CLAUDE_MEMORY_CONSENT'] === 'true') {
+    return true
+  }
+  return existsSync(CONSENT_FILE)
+}
+
+function askConsent() {
+  return new Promise((resolvePromise) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr })
+    process.stderr.write(`
+╔══════════════════════════════════════════════════════════╗
+║           claude-memory-kit — 初回セットアップ            ║
+╠══════════════════════════════════════════════════════════╣
+║                                                          ║
+║  このツールは会話履歴を Claude API に送信して             ║
+║  分析・ナレッジ抽出を行います。                           ║
+║                                                          ║
+║  送信前に機密情報（APIキー等）は自動マスクされますが、     ║
+║  完全な秘匿は保証できません。                             ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+`)
+    rl.question('  続行しますか？ (Y/n): ', (answer) => {
+      rl.close()
+      const a = answer.trim().toLowerCase()
+      resolvePromise(a === '' || a === 'y' || a === 'yes')
+    })
+  })
+}
+
+function saveConsent() {
+  mkdirSync(CONSENT_DIR, { recursive: true })
+  writeFileSync(CONSENT_FILE, new Date().toISOString())
+}
+
+function removeConsent() {
+  try {
+    if (existsSync(CONSENT_FILE)) {
+      unlinkSync(CONSENT_FILE)
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   const args = process.argv.slice(2)
   const isUninstall = args.includes('--uninstall')
   const isLocal = args.includes('--local')
   const mode = isLocal ? 'local' : 'global'
 
   console.log(`\n  claude-memory-kit ${isUninstall ? 'uninstall' : 'setup'}`)
+
+  // ── 0. Consent check (install only) ──
+  if (!isUninstall) {
+    if (!hasConsent()) {
+      const accepted = await askConsent()
+      if (!accepted) {
+        console.log('\n  セットアップを中断しました。')
+        console.log('  同意がないと Stop フックでセッション保存が動作しません。')
+        console.log('  再度セットアップするには: npm run setup\n')
+        process.exit(0)
+        return
+      }
+      saveConsent()
+      console.log('  consent: 同意が記録されました (~/.claude-memory/consented)')
+    } else {
+      console.log('  consent: 同意済み')
+    }
+  } else {
+    removeConsent()
+  }
 
   // ── 1. MCP servers → ~/.claude.json ──
   const cjPath = claudeJsonPath()
@@ -245,6 +317,7 @@ function main() {
   if (isUninstall) {
     console.log('\n  removed: mcpServers (from ~/.claude.json)')
     console.log('  removed: Stop hook, PreToolUse hook (from settings.json)')
+    console.log('  removed: consent file (~/.claude-memory/consented)')
   } else {
     console.log('\n  added:   mcpServers → ~/.claude.json (recorder + architect)')
     console.log('  added:   Stop hook (save-session)')
@@ -263,4 +336,7 @@ function main() {
   console.log(`\n  done. Restart Claude Code to apply.\n`)
 }
 
-main()
+main().catch((err) => {
+  console.error('  setup error:', err)
+  process.exit(1)
+})
