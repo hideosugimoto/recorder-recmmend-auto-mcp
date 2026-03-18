@@ -45,13 +45,31 @@ describe('saveRawLog', () => {
     expect(row.recorded_at).toBeTruthy()
   })
 
-  it('ignores duplicate session IDs', () => {
+  it('updates raw_log for pending sessions on duplicate insert', () => {
     saveRawLog('session-1', 'first', 'test-project')
     saveRawLog('session-1', 'second', 'test-project')
     const db = getDb()
     const rows = db.prepare('SELECT * FROM sessions WHERE id = ?').all('session-1')
     expect(rows).toHaveLength(1)
-    expect((rows[0] as Record<string, unknown>).raw_log).toBe('first')
+    expect((rows[0] as Record<string, unknown>).raw_log).toBe('second')
+  })
+
+  it('does not update raw_log for completed sessions', () => {
+    saveRawLog('session-completed', 'original', 'test-project')
+    const db = getDb()
+    db.prepare("UPDATE sessions SET analysis_status = 'completed' WHERE id = ?").run('session-completed')
+    saveRawLog('session-completed', 'updated', 'test-project')
+    const row = db.prepare('SELECT raw_log FROM sessions WHERE id = ?').get('session-completed') as Record<string, unknown>
+    expect(row.raw_log).toBe('original')
+  })
+
+  it('updates raw_log for failed sessions', () => {
+    saveRawLog('session-failed', 'original', 'test-project')
+    const db = getDb()
+    db.prepare("UPDATE sessions SET analysis_status = 'failed' WHERE id = ?").run('session-failed')
+    saveRawLog('session-failed', 'retry-content', 'test-project')
+    const row = db.prepare('SELECT raw_log FROM sessions WHERE id = ?').get('session-failed') as Record<string, unknown>
+    expect(row.raw_log).toBe('retry-content')
   })
 })
 

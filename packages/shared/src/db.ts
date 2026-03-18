@@ -112,14 +112,24 @@ function runMigrations(database: Database.Database): void {
 /**
  * Save raw session log (Phase 1: Stop hook).
  * Inserts a new session with analysis_status='pending'.
+ * If the session already exists and is still pending/failed,
+ * updates raw_log with the latest content (supports resumed sessions).
  */
 export function saveRawLog(sessionId: string, rawLog: string, project: string): void {
   const database = getDb()
-  const stmt = database.prepare(`
+  const insertStmt = database.prepare(`
     INSERT OR IGNORE INTO sessions (id, raw_log, project, recorded_at, analysis_status)
     VALUES (?, ?, ?, datetime('now'), 'pending')
   `)
-  stmt.run(sessionId, rawLog, project)
+  const result = insertStmt.run(sessionId, rawLog, project)
+
+  if (result.changes === 0) {
+    database.prepare(`
+      UPDATE sessions
+      SET raw_log = ?, recorded_at = datetime('now')
+      WHERE id = ? AND analysis_status IN ('pending', 'failed')
+    `).run(rawLog, sessionId)
+  }
 }
 
 /**
