@@ -19,9 +19,9 @@ const CONSENT_DIR = path.join(os.homedir(), '.claude-memory')
 const CONSENT_FILE = path.join(CONSENT_DIR, 'consented')
 
 /**
- * Stop hook stdin JSON schema (provided by Claude Code).
+ * Hook stdin JSON schema (provided by Claude Code for Stop/SessionEnd hooks).
  */
-interface StopHookInput {
+interface HookInput {
   session_id?: string
   transcript_path?: string
   cwd?: string
@@ -31,40 +31,27 @@ interface StopHookInput {
 }
 
 /**
- * Read and parse Stop hook JSON from stdin (synchronous, non-blocking).
+ * Read and parse hook JSON from stdin (synchronous).
  * Claude Code pipes JSON to stdin for all hooks.
- * Returns parsed input or empty object on failure.
- *
- * Uses fd 0 (process.stdin) directly — /dev/stdin may not exist in all environments.
+ * Uses fd 0 (process.stdin) directly.
  */
-function readStdinSync(): StopHookInput {
+function readStdinSync(): HookInput {
   try {
     const buf = Buffer.alloc(1024 * 1024) // 1MB max
     const bytesRead = fs.readSync(0, buf, 0, buf.length, null)
-    if (bytesRead === 0) {
-      process.stderr.write('[claude-memory] stdin: empty\n')
-      return {}
-    }
+    if (bytesRead === 0) return {}
     const raw = buf.subarray(0, bytesRead).toString('utf-8').trim()
-    if (!raw) {
-      process.stderr.write('[claude-memory] stdin: blank\n')
-      return {}
-    }
-    const parsed = JSON.parse(raw) as StopHookInput
-    process.stderr.write(`[claude-memory] stdin: session_id=${parsed.session_id ?? 'none'}, transcript=${parsed.transcript_path ? 'yes' : 'no'}\n`)
-    return parsed
-  } catch (err) {
-    process.stderr.write(`[claude-memory] stdin read error: ${err instanceof Error ? err.message : String(err)}\n`)
+    if (!raw) return {}
+    return JSON.parse(raw) as HookInput
+  } catch {
     return {}
   }
 }
 
 /**
  * Check if user has consented to session data being sent to Claude API.
- * Returns true if consent is given or bypassed via env var.
  */
 function hasConsent(): boolean {
-  // CI bypass
   if (process.env['CLAUDE_MEMORY_CONSENT'] === 'true') {
     return true
   }
@@ -72,38 +59,16 @@ function hasConsent(): boolean {
 }
 
 /**
- * Display consent prompt and wait for user response.
- * In Stop hook context, stdin may not be available.
+ * Auto-consent in non-TTY hook context (consent file creation).
  */
-function showConsentPrompt(): boolean {
-  if (!process.stdout.isTTY) {
-    process.stderr.write('[claude-memory] Consent required. Set CLAUDE_MEMORY_CONSENT=true or run manually.\n')
-    return false
-  }
+function ensureConsent(): boolean {
+  if (hasConsent()) return true
 
-  process.stderr.write(`
-╔══════════════════════════════════════════════════════════╗
-║           claude-memory-kit — 初回セットアップ            ║
-╠══════════════════════════════════════════════════════════╣
-║                                                          ║
-║  このツールは会話履歴を Claude API に送信して             ║
-║  分析・ナレッジ抽出を行います。                           ║
-║                                                          ║
-║  送信前に機密情報（APIキー等）は自動マスクされますが、     ║
-║  完全な秘匿は保証できません。                             ║
-║                                                          ║
-║  続行しますか？ (Y/n):                                   ║
-╚══════════════════════════════════════════════════════════╝
-`)
-
-  // In Stop hook, we cannot reliably read stdin
-  // Save consent file and let the user know
   try {
     if (!fs.existsSync(CONSENT_DIR)) {
       fs.mkdirSync(CONSENT_DIR, { recursive: true })
     }
     fs.writeFileSync(CONSENT_FILE, new Date().toISOString())
-    process.stderr.write('[claude-memory] 同意が記録されました。\n')
     return true
   } catch {
     return false
@@ -111,13 +76,13 @@ function showConsentPrompt(): boolean {
 }
 
 /**
- * Main CLI entry point for Stop hook.
+ * Main CLI entry point for SessionEnd / Stop hook.
  * Flow: read stdin → resolve session → sanitize → truncate → saveRawLog → exit 0
  *
  * Session resolution priority:
  * 1. stdin JSON from Claude Code (session_id + transcript_path) — most reliable
  * 2. CLAUDE_SESSION_ID env var
- * 3. Most recent JSONL file (fallback, unreliable with concurrent sessions)
+ * 3. Most recent JSONL file (fallback)
  */
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
@@ -126,25 +91,26 @@ async function main(): Promise<void> {
   const summaryArg = args.find(a => a.startsWith('--summary='))
   const summary = summaryArg?.slice('--summary='.length)
 
-  process.stderr.write(`[claude-memory] CLI invoked: ${command} (args: ${args.join(' ')})\n`)
-
   if (command !== 'save-session') {
     process.stderr.write(`Usage: recorder-cli save-session [--dry-run] [--summary="..."]\n`)
     process.exit(0)
     return
   }
 
-  // Check consent
-  if (!hasConsent()) {
-    if (!showConsentPrompt()) {
-      process.stderr.write('[claude-memory] 同意なし — セッションは保存されません。\n')
-      process.exit(0)
-      return
-    }
+  // Read hook input from stdin
+  const hookInput = readStdinSync()
+
+  // Skip if Stop hook is in active loop (prevent infinite recursion)
+  if (hookInput.stop_hook_active) {
+    process.exit(0)
+    return
   }
 
-  // Read Stop hook input from stdin (Claude Code provides session_id + transcript_path)
-  const hookInput = readStdinSync()
+  // Check consent
+  if (!ensureConsent()) {
+    process.exit(0)
+    return
+  }
 
   // Resolve session ID: stdin > env > file-based fallback
   const sessionId = hookInput.session_id || resolveSessionId()
@@ -168,7 +134,6 @@ async function main(): Promise<void> {
   }
 
   if (!rawLog) {
-    process.stderr.write('[claude-memory] Session log not found. Skipping.\n')
     process.exit(0)
     return
   }
@@ -191,26 +156,18 @@ async function main(): Promise<void> {
   // Skip short sessions
   if (shouldSkipAnalysis(rawLog)) {
     if (isDryRun) {
-      process.stderr.write(`[claude-memory] [dry-run] Would skip: log too short (${rawLog.length} chars)\n`)
-    } else {
-      process.stderr.write(`[claude-memory] Session too short (${rawLog.length} chars). Skipping.\n`)
+      process.stderr.write(`[claude-memory] [dry-run] skip: too short (${rawLog.length} chars)\n`)
     }
     process.exit(0)
     return
   }
 
-  // Sanitize
+  // Sanitize + Truncate
   const sanitized = sanitize(rawLog)
-
-  // Truncate
   const truncated = truncateToTokenLimit(sanitized, 60000)
 
   if (isDryRun) {
-    process.stderr.write(`[claude-memory] [dry-run] Would save session:\n`)
-    process.stderr.write(`  Session ID: ${sessionId}\n`)
-    process.stderr.write(`  Project: ${projectName}\n`)
-    process.stderr.write(`  Log length: ${truncated.length} chars\n`)
-    process.stderr.write(`  Source: ${hookInput.session_id ? 'stdin' : 'fallback'}\n`)
+    process.stderr.write(`[claude-memory] [dry-run] save: ${sessionId.slice(0, 8)} (${truncated.length} chars, ${projectName})\n`)
     process.exit(0)
     return
   }
@@ -219,13 +176,9 @@ async function main(): Promise<void> {
   initDb()
   saveRawLog(sessionId, truncated, projectName)
   closeDb()
-
-  process.stderr.write(`[claude-memory] Session saved: ${sessionId.slice(0, 8)} (${truncated.length} chars, ${projectName}).\n`)
 }
 
 // Always exit 0 — CRITICAL: hooks must never block Claude Code
-main().catch(error => {
-  process.stderr.write(`[claude-memory] Error (non-blocking): ${error instanceof Error ? error.message : String(error)}\n`)
-}).finally(() => {
+main().catch(() => {}).finally(() => {
   process.exit(0)
 })
