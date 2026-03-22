@@ -3,7 +3,7 @@
  * claude-memory-kit setup script
  *
  * MCP servers  → ~/.claude.json (mcpServers)
- * Hooks        → ~/.claude/settings.json (Stop / PreToolUse)
+ * Hooks        → ~/.claude/settings.json (hooks.SessionEnd / hooks.PreToolUse)
  *
  * Usage:
  *   npm run setup              # install (global)
@@ -106,6 +106,14 @@ function findHookIndex(hookArray, commandSubstring) {
   )
 }
 
+/** Ensure settings.hooks object exists and return it */
+function ensureHooksObject(settings) {
+  if (!settings.hooks || typeof settings.hooks !== 'object') {
+    settings.hooks = {}
+  }
+  return settings.hooks
+}
+
 // ── MCP Servers (claude.json) ───────────────────────────────────
 
 function installMcpServers(claudeJson) {
@@ -129,47 +137,85 @@ function uninstallMcpServers(claudeJson) {
 // ── Hooks (settings.json) ───────────────────────────────────────
 
 function installHooks(settings) {
-  // Stop hook — upsert
-  if (!Array.isArray(settings.Stop)) {
-    settings.Stop = []
+  const hooks = ensureHooksObject(settings)
+
+  // Migrate: move old top-level hooks into hooks object
+  for (const event of ['Stop', 'SessionEnd', 'PreToolUse', 'PostToolUse', 'PreCompact', 'SessionStart']) {
+    if (Array.isArray(settings[event])) {
+      if (!Array.isArray(hooks[event])) {
+        hooks[event] = []
+      }
+      hooks[event].push(...settings[event])
+      delete settings[event]
+    }
+  }
+
+  // SessionEnd hook — upsert (replaces old Stop hook)
+  if (!Array.isArray(hooks.SessionEnd)) {
+    hooks.SessionEnd = []
   }
   const recorderEntry = {
     matcher: '*',
-    hooks: [{ type: 'command', command: recorderHookCommand() }],
+    hooks: [{ type: 'command', command: recorderHookCommand(), timeout: 30 }],
   }
-  const stopIdx = findHookIndex(settings.Stop, 'recorder/dist/cli.js')
-  if (stopIdx >= 0) {
-    settings.Stop[stopIdx] = recorderEntry
+  // Remove old Stop-based recorder hook if present
+  if (Array.isArray(hooks.Stop)) {
+    const oldIdx = findHookIndex(hooks.Stop, 'recorder/dist/cli.js')
+    if (oldIdx >= 0) hooks.Stop.splice(oldIdx, 1)
+  }
+  const seIdx = findHookIndex(hooks.SessionEnd, 'recorder/dist/cli.js')
+  if (seIdx >= 0) {
+    hooks.SessionEnd[seIdx] = recorderEntry
   } else {
-    settings.Stop.push(recorderEntry)
+    hooks.SessionEnd.push(recorderEntry)
   }
 
   // PreToolUse hook — upsert
-  if (!Array.isArray(settings.PreToolUse)) {
-    settings.PreToolUse = []
+  if (!Array.isArray(hooks.PreToolUse)) {
+    hooks.PreToolUse = []
   }
   const architectEntry = {
     matcher: '*',
     hooks: [{ type: 'command', command: architectHookCommand() }],
   }
-  const ptuIdx = findHookIndex(settings.PreToolUse, 'architect/dist/cli.js')
+  const ptuIdx = findHookIndex(hooks.PreToolUse, 'architect/dist/cli.js')
   if (ptuIdx >= 0) {
-    settings.PreToolUse[ptuIdx] = architectEntry
+    hooks.PreToolUse[ptuIdx] = architectEntry
   } else {
-    settings.PreToolUse.push(architectEntry)
+    hooks.PreToolUse.push(architectEntry)
   }
 
   return settings
 }
 
 function uninstallHooks(settings) {
-  // Remove Stop hook
+  const hooks = settings.hooks ?? {}
+
+  // Remove SessionEnd hook
+  if (Array.isArray(hooks.SessionEnd)) {
+    const idx = findHookIndex(hooks.SessionEnd, 'recorder/dist/cli.js')
+    if (idx >= 0) hooks.SessionEnd.splice(idx, 1)
+  }
+
+  // Remove old Stop hook (migration)
+  if (Array.isArray(hooks.Stop)) {
+    const idx = findHookIndex(hooks.Stop, 'recorder/dist/cli.js')
+    if (idx >= 0) hooks.Stop.splice(idx, 1)
+  }
+
+  // Remove legacy top-level Stop hook
   if (Array.isArray(settings.Stop)) {
     const idx = findHookIndex(settings.Stop, 'recorder/dist/cli.js')
     if (idx >= 0) settings.Stop.splice(idx, 1)
   }
 
   // Remove PreToolUse hook
+  if (Array.isArray(hooks.PreToolUse)) {
+    const idx = findHookIndex(hooks.PreToolUse, 'architect/dist/cli.js')
+    if (idx >= 0) hooks.PreToolUse.splice(idx, 1)
+  }
+
+  // Remove legacy top-level PreToolUse hook
   if (Array.isArray(settings.PreToolUse)) {
     const idx = findHookIndex(settings.PreToolUse, 'architect/dist/cli.js')
     if (idx >= 0) settings.PreToolUse.splice(idx, 1)
@@ -316,11 +362,11 @@ async function main() {
   // ── 3. Summary ──
   if (isUninstall) {
     console.log('\n  removed: mcpServers (from ~/.claude.json)')
-    console.log('  removed: Stop hook, PreToolUse hook (from settings.json)')
+    console.log('  removed: SessionEnd hook, PreToolUse hook (from settings.json)')
     console.log('  removed: consent file (~/.claude-memory/consented)')
   } else {
     console.log('\n  added:   mcpServers → ~/.claude.json (recorder + architect)')
-    console.log('  added:   Stop hook (save-session)')
+    console.log('  added:   SessionEnd hook (save-session)')
     console.log('  added:   PreToolUse hook (startup-check)')
 
     // Import past session history
