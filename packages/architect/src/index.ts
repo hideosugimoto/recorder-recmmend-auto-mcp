@@ -10,6 +10,7 @@ import {
   resolveProjectNameFromSession,
   isOnline,
   getMonthlyCost,
+  saveCurrentSession,
   ANALYSIS_PROMPT,
 } from '@claude-memory/shared'
 import {
@@ -302,11 +303,18 @@ server.tool(
 
 server.tool(
   'recommend',
-  'Analyze pending sessions using the current Claude Code session (no API key required). Returns raw_log and analysis prompt for Claude to process, then call save_analysis_result with the result.',
+  'Save the current session, analyze pending sessions, and propose improvements. No API key required — Claude Code itself performs the analysis.',
   { limit: z.number().optional().default(3).describe('Max pending sessions to return') },
   async ({ limit }) => {
     try {
       const project = resolveProjectNameFromSession()
+
+      // Step 0: Save current session's JSONL to DB (on-demand, replaces Stop hook)
+      const saveResult = saveCurrentSession()
+      const preamble: string[] = []
+      if (saveResult.saved) {
+        preamble.push(`現セッション ${saveResult.sessionId.slice(0, 8)} を保存しました。`)
+      }
 
       // Reset failed → pending
       resetFailedToPending(project)
@@ -319,13 +327,14 @@ server.tool(
         const threshold = parseInt(process.env['CANDIDATE_THRESHOLD'] ?? '3', 10)
         const candidates = detect(threshold, project)
 
+        const prefix = preamble.length > 0 ? preamble.join('\n') + '\n\n' : ''
         if (candidates.length > 0) {
           return {
-            content: [{ type: 'text' as const, text: `未分析セッションはありません。\n\n${format(candidates)}` }],
+            content: [{ type: 'text' as const, text: `${prefix}未分析セッションはありません。\n\n${format(candidates)}` }],
           }
         }
         return {
-          content: [{ type: 'text' as const, text: '未分析セッションはありません。蓄積されたナレッジの候補もまだありません。' }],
+          content: [{ type: 'text' as const, text: `${prefix}未分析セッションはありません。蓄積されたナレッジの候補もまだありません。` }],
         }
       }
 
@@ -359,7 +368,8 @@ server.tool(
 ${ANALYSIS_PROMPT}${s.rawLog}`
       }).join('\n\n===\n\n')
 
-      const header = `${sessionsToAnalyze.length}件の未分析セッションがあります。各セッションを分析し、結果を save_analysis_result ツールで保存してください。
+      const prefix = preamble.length > 0 ? preamble.join('\n') + '\n\n' : ''
+      const header = `${prefix}${sessionsToAnalyze.length}件の未分析セッションがあります。各セッションを分析し、結果を save_analysis_result ツールで保存してください。
 
 セッションID一覧: ${sessionsToAnalyze.map(s => s.id).join(', ')}
 

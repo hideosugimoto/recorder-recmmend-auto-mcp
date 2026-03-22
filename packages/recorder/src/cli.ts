@@ -34,18 +34,27 @@ interface StopHookInput {
  * Read and parse Stop hook JSON from stdin (synchronous, non-blocking).
  * Claude Code pipes JSON to stdin for all hooks.
  * Returns parsed input or empty object on failure.
+ *
+ * Uses fd 0 (process.stdin) directly — /dev/stdin may not exist in all environments.
  */
 function readStdinSync(): StopHookInput {
   try {
-    const fd = fs.openSync('/dev/stdin', 'r')
     const buf = Buffer.alloc(1024 * 1024) // 1MB max
-    const bytesRead = fs.readSync(fd, buf, 0, buf.length, null)
-    fs.closeSync(fd)
-    if (bytesRead === 0) return {}
+    const bytesRead = fs.readSync(0, buf, 0, buf.length, null)
+    if (bytesRead === 0) {
+      process.stderr.write('[claude-memory] stdin: empty\n')
+      return {}
+    }
     const raw = buf.subarray(0, bytesRead).toString('utf-8').trim()
-    if (!raw) return {}
-    return JSON.parse(raw) as StopHookInput
-  } catch {
+    if (!raw) {
+      process.stderr.write('[claude-memory] stdin: blank\n')
+      return {}
+    }
+    const parsed = JSON.parse(raw) as StopHookInput
+    process.stderr.write(`[claude-memory] stdin: session_id=${parsed.session_id ?? 'none'}, transcript=${parsed.transcript_path ? 'yes' : 'no'}\n`)
+    return parsed
+  } catch (err) {
+    process.stderr.write(`[claude-memory] stdin read error: ${err instanceof Error ? err.message : String(err)}\n`)
     return {}
   }
 }
@@ -116,6 +125,8 @@ async function main(): Promise<void> {
   const isDryRun = args.includes('--dry-run')
   const summaryArg = args.find(a => a.startsWith('--summary='))
   const summary = summaryArg?.slice('--summary='.length)
+
+  process.stderr.write(`[claude-memory] CLI invoked: ${command} (args: ${args.join(' ')})\n`)
 
   if (command !== 'save-session') {
     process.stderr.write(`Usage: recorder-cli save-session [--dry-run] [--summary="..."]\n`)

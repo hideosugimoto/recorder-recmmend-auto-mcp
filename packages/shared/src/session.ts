@@ -245,3 +245,62 @@ export function truncateToTokenLimit(text: string, charLimit = 60000): string {
   const truncated = text.slice(text.length - charLimit)
   return `[前略...]\n${truncated}`
 }
+
+/**
+ * Save the current session's JSONL to DB (on-demand).
+ * Reads session JSONL, sanitizes, truncates, and saves as pending.
+ * Used by architect's recommend tool — no Stop hook dependency.
+ *
+ * Requires initDb() to be called before use.
+ */
+export function saveCurrentSession(options?: {
+  sessionId?: string
+  transcriptPath?: string
+  cwd?: string
+}): { sessionId: string; saved: boolean; reason?: string } {
+  // Lazy import to avoid circular dependency at module load time
+  const { sanitize, shouldSkipAnalysis } = require('./analyzer.js')
+  const { saveRawLog } = require('./db.js')
+
+  const sessionId = options?.sessionId ?? resolveSessionId()
+
+  // Read session log: transcriptPath > file-based fallback
+  let rawLog: string | null = null
+
+  if (options?.transcriptPath) {
+    try {
+      if (fs.existsSync(options.transcriptPath)) {
+        const content = fs.readFileSync(options.transcriptPath, 'utf-8')
+        rawLog = extractConversationFromJsonl(content)
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  if (!rawLog) {
+    rawLog = resolveSessionLog(sessionId)
+  }
+
+  if (!rawLog) {
+    return { sessionId, saved: false, reason: 'session log not found' }
+  }
+
+  if (shouldSkipAnalysis(rawLog)) {
+    return { sessionId, saved: false, reason: `too short (${rawLog.length} chars)` }
+  }
+
+  const sanitized = sanitize(rawLog)
+  const truncated = truncateToTokenLimit(sanitized, 60000)
+
+  // Resolve project name
+  let projectName: string
+  if (options?.cwd) {
+    projectName = path.basename(options.cwd)
+  } else {
+    projectName = resolveProjectNameFromSession(sessionId)
+  }
+
+  saveRawLog(sessionId, truncated, projectName)
+  return { sessionId, saved: true }
+}
